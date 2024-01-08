@@ -9,75 +9,216 @@
 #include "yxml.h"
 
 // #define DEBUG_VERBOSE 1
+//#undef DEBUG
 
-typedef enum {
-    kToken_Separator = 1,
-    kToken_Unquoted, // 2
-    kToken_Quoted,   // 3
-    kToken_Empty,    // 4
-    kToken_String,   // 5
-    kToken_Number,   // 6
-    kToken_WtFnZb,   // 7
-    kToken_PRiVATE,  // 8
-    kToken_PRiV_WtF, // 9
-    kToken_N3wZ,     // a
-    kToken_newzNZB,  // b
-    kToken_FULL,     // c
-    kToken_yEnc,     // d
-    kTokenTypeMax    // e
-} tTokenType;
+#if DEBUG
+#define logDebug(...)    fprintf(stderr, __VA_ARGS__ )
+#else
+#define logDebug( ... )    do {} while (0)
+#endif
 
+typedef unsigned char byte;
 
-static const char * tokenTypeNames[ kTokenTypeMax ] = {
-    [kToken_Separator] = "separator",
-    [kToken_Unquoted]  = "unquoted",
-    [kToken_Empty]     = "empty",
-    [kToken_String]    = "string",
-    [kToken_Number]    = "number",
-    [kToken_Quoted]    = "quoted",
-    [kToken_WtFnZb]    = "WtFnZb",
-    [kToken_PRiVATE]   = "PRiVATE",
-    [kToken_PRiV_WtF]  = "PRiV-WtF",
-    [kToken_N3wZ]      = "N3wZ",
-    [kToken_newzNZB]   = "newzNZB",
-    [kToken_FULL]      = "FULL",
-    [kToken_yEnc]      = "yEnc"
+static struct {
+    enum eRunEndType { kNotEnd = 0, kSeparator, kDoubleQuotes, kLeftSquareBracket, kRightSquareBracket } runEndType;
+} charMap[256] = {
+        ['\0'] = { kSeparator },
+        [' ']  = { kSeparator },
+        ['-']  = { kSeparator },
+        ['"']  = { kDoubleQuotes },
+        ['[']  = { kLeftSquareBracket },
+        [']']  = { kRightSquareBracket }
+};
+
+const char * runEndTypeAsString[] = {
+    [kNotEnd]             = "not end",
+    [kSeparator]          = "seperator",
+    [kDoubleQuotes]       = "quoted",
+    [kLeftSquareBracket]  = "[",
+    [kRightSquareBracket] = "]"
 };
 
 
 typedef enum {
-    kHashUnset      = 0,
-    kHashEmpty      = 0xDeadBeef,
+    kSep_nop = 0,             // ''
+    kSep_startSq,             // '[', '[ ', ' [', ' [ '
+    kSep_endSq,               // ']', '] ', ']  '
+    kSep_dash,                // ' -', ' - ', ' -  ', '--'
+    kSep_endBracket,          // ')', ') '
+    kSep_startBracket,        // '(', ' (', '  ('
+    kSep_emptyQuotes,         // '""'
+    kSep_startQuotes,         // ' "',
+    kSep_endQuotes,           // '" ', '"  '
+    kSep_space                // ' ', '  '
+} tSeparatorIndex;
+
+const char * sepTokenToString[] = {
+        [kSep_nop]                = "-",
+        [kSep_startSq]            = "(start square)",
+        [kSep_endSq]              = "(end square)",
+        [kSep_dash]               = "(dash)",
+        [kSep_endBracket]         = "(end bracket)",
+        [kSep_startBracket]       = "(start bracket)",
+        [kSep_emptyQuotes]        = "(empty quotes)",
+        [kSep_startQuotes]        = "(start quotes)",
+        [kSep_endQuotes]          = "(end quotes)",
+        [kSep_space]              = "(space)"
+};
+
+struct {
+    unsigned long hash;
+    tSeparatorIndex index[2];
+} separatorHashTable[] = {
+        { 0x00000000deadbeef, {}},                                           // ''
+//        { 0x000000283f4bb0d1, { kSep_endSq, kSep_nop } },                            // ']'
+//        { 0x000000283f4bb0d3, { kSep_startSq, kSep_nop } },                          // '['
+//        { 0x000000283f4bb0e1, { kSep_dash.0 } },                             // '-'
+//        { 0x000000283f4bb0e5, { kSep_endBracket} },                        // ')'
+//        { 0x000000283f4bb0e6, { kSep_startBracket} },                      // '('
+        { 0x000000283f4bb0ec, { kSep_endQuotes,  kSep_startQuotes }},                      // '"'
+        { 0x000000283f4bb0ee, { kSep_space }},                            // ' '
+        { 0x0000074ba1aec60e, { kSep_startSq }},                          // '[ '
+        { 0x0000074ba1aec65d, { kSep_endSq }},                            // ']-'
+        { 0x0000074ba1aec66b, { kSep_endSq,      kSep_startSq }},           // ']['
+        { 0x0000074ba1aec6ae, { kSep_endSq }},                            // '] '
+        { 0x0000074ba1aec94b, { kSep_startSq }},                          // '-['
+        { 0x0000074ba1aec99d, { kSep_dash }},                             // '--'
+        { 0x0000074ba1aecace, { kSep_endBracket }},                       // ') '
+        { 0x0000074ba1aecadd, { kSep_endBracket }},                       // ')-'
+        { 0x0000074ba1aecb31, { kSep_dash }},                             // ' -'
+        { 0x0000074ba1aecb34, { kSep_startBracket }},                     // ' ('
+        { 0x0000074ba1aecb3a, { kSep_startQuotes }},                      // ' "'
+        { 0x0000074ba1aecb3c, { kSep_space }},                            // '  '
+        { 0x0000074ba1aecb98, { kSep_endQuotes }},                        // '" '
+//      { 0x0000074ba1aecc18, { } },                                           // ': '
+        { 0x0000074ba1aecce3, { kSep_startSq }},                          // ' ['
+//      { 0x0000074ba1aecdf2, { } },                                           // '::'
+        { 0x000151a90eb8ad33, { kSep_endSq,      kSep_startSq }},                // ']-['
+        { 0x000151a90eb8ad68, { kSep_endSq,      kSep_startQuotes }},       // ']-"'
+        { 0x000151a90eb8bcba, { kSep_endSq,      kSep_startQuotes }},       // '] "'
+        { 0x000151a90eb8bcbc, { kSep_endSq }},                            // ']  '
+        { 0x000151a90eb8bce3, { kSep_endSq,      kSep_startSq }},          // '] ['
+        { 0x000151a90eb9023b, { kSep_startSq }},                          // '::['
+        { 0x000151a90eb90264, { kSep_startBracket }},                     // '::('
+        { 0x000151a90eb9512e, { kSep_startSq }},                          // ' [ '
+//        { 0x000151a90eb9852e, { kSep_dash } },                             // ' - '
+        { 0x000151a90eb9856b, { kSep_startSq }},                          // ' -['
+        { 0x000151a90eb99b10, { kSep_startBracket }},                     // '  ('
+        { 0x000151a90eb9aa88, { kSep_endQuotes,  kSep_startBracket }},  // '" ('
+        { 0x000151a90eb9aa90, { kSep_endQuotes }},                        // '"  '
+        { 0x000151a90eb9aadb, { kSep_endQuotes,  kSep_startSq }},          // '" ['
+//        { 0x000151a90eb9b492, { kSep_colon, kSep_startQuotes } },          // ': "'
+        { 0x000151a90eb9c8e3, { kSep_dash,       kSep_startSq }},                          // '- ['
+        { 0x000151a90eb9f134, { kSep_endBracket, kSep_startBracket }},    // ') ('
+        { 0x000151a90eb9f13a, { kSep_endBracket }},                       // ') "'
+        { 0x000151a90eb9f6e3, { kSep_endBracket, kSep_startSq }},         // ') ['
+        { 0x003cafa0baa5e0e3, { kSep_dash,       kSep_startSq }},                          // '-- ['
+        { 0x003cafa0baaffa8e, { kSep_endQuotes }},                        // '" - '
+        { 0x003cafa0bab6f6ba, { kSep_startQuotes }},                      // ' - "'
+        { 0x003cafa0bab6f6bc, { kSep_dash }},                             // ' -  '
+        { 0x003cafa0bab6f6e3, { kSep_dash,       kSep_startSq }},            // ' - ['
+        { 0x003cafa0babca8e3, { kSep_endSq,      kSep_startSq }},              // ' ] ['
+        { 0x003cafa0babcadb3, { kSep_endSq,      kSep_startSq }},                // ' ]-['
+        { 0x003cafa0bd4e6ace, { kSep_startSq }},                          // '::[ '
+        { 0x003cafa0bd52182e, { kSep_endSq }},                            // '] - '
+        { 0x003cafa0bd521a3b, { kSep_endSq,      kSep_startQuotes }},          // '] "['
+        { 0x003cafa0bd521ae9, { kSep_endSq,      kSep_startQuotes }},          // '] "-'
+//        { 0x003cafa0bd5e4133, { } },                              // ']]-['
+        { 0x003cafa0bd5f614e, { kSep_endSq,      kSep_startSq }},                // ']-[ '
+        { 0x003cafa0bd630eb4, { kSep_startBracket }},                     // '[[ ('
+        { 0x029a3448818ee8ba, { kSep_endSq,      kSep_startQuotes }},          // ' ] - "'
+        { 0x029a3448818ee8e3, { kSep_endSq,      kSep_startSq }},                // ' ] - ['
+//        { 0x029a344e2ef57a0d, { } },                              // '--:-:-'
+//        { 0x029a3476db94a29d, { } },                              // '-:-:--'
+        { 0x029a34772393523b, { kSep_endSq,      kSep_startQuotes }},          // '] - "['
+        { 0x029a347723a67aba, { kSep_endSq,      kSep_startQuotes }},          // ']  - "'
+        { 0x0b1891227f4068ba, { kSep_endSq,      kSep_startQuotes }},          // '] - "'
+        { 0x0b1891227f4068e3, { kSep_endSq,      kSep_startSq }},                // '] - ['
+        { 0x0b1891227f40ea1d, { kSep_endSq,      kSep_startQuotes }},          // '] "--'
+        { 0x0b189122f21f4e4e, { kSep_endSq,      kSep_startSq }},                // ' ]-[ '
+        { 0x0b189122fce0fab4, { kSep_endQuotes,  kSep_startBracket }},     // '" - ('
+        { 0x0b189122fce0faba, { kSep_endQuotes,  kSep_startQuotes }},      // '" - "'
+        { 0x0b189122fd21ba1a, { kSep_startQuotes }},                      // ' -  "'
+
+        { 0x78d595a8ab9f687c, { kSep_endSq,      kSep_emptyQuotes }},          // '] - "" '
+        { 0x78d5ad0748b2292e, { kSep_endSq,      kSep_startSq }},                // ' ] - [ '
+        { 0,                  {}}
+};
+
+typedef enum {
+    kToken_Unset = 0,
+    kToken_Separator, // 1
+    kToken_Unquoted,  // 2
+    kToken_Quoted,    // 3
+    kToken_Empty,     // 4
+    kToken_String,    // 5
+    kToken_Number,    // 6
+    kToken_Fraction,  // 7
+    kToken_WtFnZb,    // 8
+    kToken_PRiVATE,   // 9
+    kToken_N3wZ,      // a
+    kToken_newzNZB,   // b
+    kToken_FULL,      // c
+    kToken_yEnc,      // d
+    kToken_Of,        // e
+    kTokenTypeMax     // f
+} tTokenType;
+
+
+static const char * tokenTypeNames[kTokenTypeMax] = {
+        [kToken_Unset]     = "unset",
+        [kToken_Separator] = "separator",
+        [kToken_Unquoted]  = "unquoted",
+        [kToken_Quoted]    = "quoted",
+        [kToken_Empty]     = "empty",
+        [kToken_String]    = "string",
+        [kToken_Number]    = "number",
+        [kToken_Fraction]  = "fraction",
+        [kToken_WtFnZb]    = "WtFnZb",
+        [kToken_PRiVATE]   = "PRiVATE",
+        [kToken_N3wZ]      = "N3wZ",
+        [kToken_newzNZB]   = "newzNZB",
+        [kToken_FULL]      = "FULL",
+        [kToken_yEnc]      = "yEnc",
+        [kToken_Of]        = "of"
+};
+
+
+typedef enum {
+    kHash_Unset = 0,
+    kHash_Empty = 0xDeadBeef,
+    kHash_OneSpace = 0x000000283f4bb0ee, // hash after parsing a single space
 
     // elements
-    kHashNZB        = 0x000151a90eb474b2,
-    kHashSegments   = 0x57ef75389804b12b,
-    kHashSegment    = 0x78d5ad74034dd104,
-    kHashHead       = 0x003cafa0bdb94552,
-    kHashMeta       = 0x003cafa0bd974cbd,
-    kHashGroups     = 0x029a347370b2f5eb,
-    kHashGroup      = 0x0b18912267fc3ade,
-    kHashFile       = 0x003cafa0bdeb36b1,
+    kHash_NZB = 0x000151a90eb474b2,
+    kHash_Segments = 0x57ef75389804b12b,
+    kHash_Segment = 0x78d5ad74034dd104,
+    kHash_Head = 0x003cafa0bdb94552,
+    kHash_Meta = 0x003cafa0bd974cbd,
+    kHash_Groups = 0x029a347370b2f5eb,
+    kHash_Group = 0x0b18912267fc3ade,
+    kHash_File = 0x003cafa0bdeb36b1,
 
     // attributes
-    kHashXmlns      = 0x0b189122f49400cb,
-    kHashType       = 0x003cafa0badc89f9,
-    kHashSubject    = 0x78d5adc5d7a0afe2,
-    kHashDate       = 0x003cafa0bda6aa31,
-    kHashBytes      = 0x0b189122f1c044a3,
-    kHashNumber     = 0x029a34715398d358,
-    kHashPoster     = 0x029a344bcb84b4a0,
+    kHash_Xmlns = 0x0b189122f49400cb,
+    kHash_Type = 0x003cafa0badc89f9,
+    kHash_Subject = 0x78d5adc5d7a0afe2,
+    kHash_Date = 0x003cafa0bda6aa31,
+    kHash_Bytes = 0x0b189122f1c044a3,
+    kHash_Number = 0x029a34715398d358,
+    kHash_Poster = 0x029a344bcb84b4a0,
 
     // subject
-    kHashWtFnZb     = 0x029a3476ebecf502,
-    kHashPRiVATE    = 0x78d5ad39d3933041,
-    kHashN3wZ       = 0x003cafa0bae64024,
-    kHashnewzNZB    = 0x78d594be57432922,
-    kHashFULL       = 0x003cafa0bd59fc48,
-    kHashyEnc       = 0x003cafa0bacd759b,
+    kHash_WtFnZb = 0x029a3476ebecf502,
+    kHash_PRiVATE = 0x78d5ad39d3933041,
+    kHash_N3wZ = 0x003cafa0bae64024,
+    kHash_newzNZB = 0x78d594be57432922,
+    kHash_FULL = 0x003cafa0bd59fc48,
+    kHash_yEnc = 0x003cafa0bacd759b,
+    kHash_Of = 0x0000074ba1aec3c8,
 
-    // force the enum width to be 64 bits
-    kHashForceWidth = 0x8070605040302010
+    // guarantee the enum width is at least 64 bits
+    kHash_ForceWidth = 0x8070605040302010
 } tHash;
 
 typedef unsigned long tSignature;
@@ -85,16 +226,16 @@ typedef unsigned long tSignature;
 typedef struct sAttribute {
     struct sAttribute * next;
 
-    tHash           attributeHash;
-    const char *    value;
+    tHash attributeHash;
+    const char * value;
 } tAttribute;
 
 typedef struct sElement {
     struct sElement * next;
 
-    tHash           elementHash;
-    tAttribute *    attributes;
-    char *          contents;
+    tHash elementHash;
+    tAttribute * attributes;
+    const char * contents;
 } tElement;
 
 
@@ -102,58 +243,56 @@ struct {
     tHash hash;
     const char * string;
 } hashAsString[] = {
-    // elements
-    { kHashNZB,      "kHashNZB"      },
-    { kHashSegments, "kHashSegments" },
-    { kHashSegment,  "kHashSegment"  },
-    { kHashHead,     "kHashHead"     },
-    { kHashMeta,     "kHashMeta"     },
-    { kHashGroups,   "kHashGroups"   },
-    { kHashGroup,    "kHashGroup"    },
-    { kHashFile,     "kHashFile"     },
+        // elements
+        { kHash_NZB,      "NZB" },
+        { kHash_Segments, "Segments" },
+        { kHash_Segment,  "Segment" },
+        { kHash_Head,     "Head" },
+        { kHash_Meta,     "Meta" },
+        { kHash_Groups,   "Groups" },
+        { kHash_Group,    "Group" },
+        { kHash_File,     "File" },
 
-    // attributes
-    { kHashXmlns,    "kHashXmlns"    },
-    { kHashType,     "kHashType"     },
-    { kHashSubject,  "kHashSubject"  },
-    { kHashDate,     "kHashDate"     },
-    { kHashBytes,    "kHashBytes"    },
-    { kHashNumber,   "kHashNumber"   },
-    { kHashPoster,   "kHashPoster"   },
+        // attributes
+        { kHash_Xmlns,    "Xmlns" },
+        { kHash_Type,     "Type" },
+        { kHash_Subject,  "Subject" },
+        { kHash_Date,     "Date" },
+        { kHash_Bytes,    "Bytes" },
+        { kHash_Number,   "Number" },
+        { kHash_Poster,   "Poster" },
 
-    // subject
-    { kHashWtFnZb,   "kHashWtFnZb"   },
-    { kHashPRiVATE,  "kHashPRiVATE"  },
-    { kHashN3wZ,     "kHashN3wZ"     },
-    { kHashnewzNZB,  "kHashnewzNZB"  },
-    { kHashFULL,     "kHashFULL"     },
-    { kHashyEnc,     "kHashyEnc"     },
+        // subject
+        { kHash_WtFnZb,   "WtFnZb" },
+        { kHash_PRiVATE,  "PRiVATE" },
+        { kHash_N3wZ,     "N3wZ" },
+        { kHash_newzNZB,  "newzNZB" },
+        { kHash_FULL,     "FULL" },
+        { kHash_yEnc,     "yEnc" },
+        { kHash_Of,       "Of" },
 
-    { kHashUnset,    "kHashUnset"    },
-    { kHashEmpty,    "kHashEmpty"    },
-    { 0,             NULL            }
+        { kHash_Unset,    "Unset" },
+        { kHash_Empty,    "Empty" },
+        { 0, NULL }
 };
 
 
-tHash hashString( const char * string, const int maxLen )
-{
-    tHash hash = 0xDeadBeef;
+tHash hashString(const unsigned char * string, const int maxLen) {
+    tHash hash = kHash_Empty;
     int remaining = maxLen;
-    if (remaining < 1) remaining = (-1 >> 1);
-    while ( remaining-- != 0 && *string != '\0') {
-        hash ^= (hash * 47 ) + *string++;
+    if ( remaining < 1 ) remaining = (-1 >> 1);
+    while ( remaining-- != 0 && *string != '\0' ) {
+        hash ^= (hash * 47) + *string++;
     }
-    if (hash == 0) hash++;
+    if ( hash == 0 ) hash++;
     return hash;
 }
 
-int parseNumber( const char * string, const int maxLen )
-{
+int parseInteger(const unsigned char * string, const int maxLen) {
     int result = 0;
-    for (int i = 0; i < maxLen; i++)
-    {
-        if ( isdigit(string[i]) ) {
-            result = result * 10 + (string[i] - '0');
+    for ( int i = 0; i < maxLen; i++ ) {
+        if ( isdigit(string[ i ])) {
+            result = result * 10 + (string[ i ] - '0');
         } else {
             return -1;
         }
@@ -161,66 +300,59 @@ int parseNumber( const char * string, const int maxLen )
     return result;
 }
 
-const char * describeHash( tHash hash )
-{
-    for ( unsigned int i = 0; hashAsString[i].hash != 0; ++i ) {
-        if ( hashAsString[i].hash == hash ) {
-            return hashAsString[i].string;
+const char * describeHash(tHash hash) {
+    for ( unsigned int i = 0; hashAsString[ i ].hash != 0; ++i ) {
+        if ( hashAsString[ i ].hash == hash ) {
+            return hashAsString[ i ].string;
         }
     }
 }
 
-void trimstr( char * string )
-{
-    char * end = string;
-    for ( char * ptr = string; *ptr != '\0'; ptr++ ) {
-        if ( isgraph(*ptr) ) end = &ptr[1];
+void trimstr(unsigned char * string) {
+    unsigned char * end = string;
+    for ( unsigned char * ptr = string; *ptr != '\0'; ptr++ ) {
+        if ( isgraph(*ptr)) end = &ptr[ 1 ];
     }
 
     *end = '\0';
 }
 
-const char * substr( const char * haystack, const char * needle )
-{
-    const char * result = strstr( haystack, needle );
-    if ( result != NULL )
-    {
-        result += strlen( needle );
+const unsigned char * substr(const unsigned char * haystack, const unsigned char * needle) {
+    const unsigned char * result = strstr(haystack, needle);
+    if ( result != NULL) {
+        result += strlen(needle);
     }
     return result;
 }
 
 
-const char * strblock( const char * start, const char * end )
-{
+unsigned char * blockToStr(const unsigned char * start, const unsigned char * end) {
     ssize_t length = end - start;
-    char * result = NULL;
-    if (length > 1) {
-        result = malloc( length + 1 );
-        if ( result != NULL ) {
-            memcpy( result, start, length );
-            result[length] = '\0';
+    unsigned char * result = NULL;
+    if ( length > 1 ) {
+        result = malloc(length + 1);
+        if ( result != NULL) {
+            memcpy(result, start, length);
+            result[ length ] = '\0';
         }
     }
-    return (const char *)result;
+    return result;
 }
 
-void setDirectory(const char * directory, int length )
-{
-    printf("directory \'%.*s\'\n", length, directory);
+void setDirectory(const unsigned char * directory, int length) {
+    logDebug("directory \'%.*s\'\n", length, directory);
 }
 
-void setFilename(const char * filename, int length )
-{
-    printf("filename \'%.*s\'\n", length, filename);
+void setFilename(const unsigned char * filename, int length) {
+    logDebug("filename \'%.*s\'\n", length, filename);
 }
 
 #if 0
-void processBracketed( const char *start, const char *end )
+void processBracketed( const unsigned char *start, const unsigned char *end )
 {
-    const char * p;
-    const char * s;
-    const char * lastSep;
+    const unsigned char * p;
+    const unsigned char * s;
+    const unsigned char * lastSep;
     long         index;
     long         total;
     bool         allDigits;
@@ -256,8 +388,8 @@ void processBracketed( const char *start, const char *end )
     }
 
     if (*start == '/') {
-        const char * p = start + 1;
-        const char * sep = p;
+        const unsigned char * p = start + 1;
+        const unsigned char * sep = p;
         while (p < end)
         {
             if (*p == '/') {
@@ -286,48 +418,48 @@ void processBracketed( const char *start, const char *end )
             }
             if (p < end) {
                 // not all digits after the slash, filename?
-                printf("index = %ld\n", index);
+                logDebug("index = %ld\n", index);
                 setFilename(p, (end - p));
             } else {
                 // all digits after the slash, so assume it's the total
-                printf("index = %ld, total = %ld\n", index, total);
+                logDebug("index = %ld, total = %ld\n", index, total);
             }
         } else {
-            printf("all digits: %ld\n", index);
+            logDebug("all digits: %ld\n", index);
         }
     } else {
         tHash hash = hashString( start, end - start );
         switch (hash)
         {
-        case kHashFULL:
-            printf("### FULL\n");
+        case kHash_FULL:
+            logDebug("### FULL\n");
             break;
 
-        case kHashN3wZ:
-            printf("### N3wZ\n");
+        case kHash_N3wZ:
+            logDebug("### N3wZ\n");
             break;
 
-        case kHashPRiVATE:
-            printf("### PRiVATE\n");
+        case kHash_PRiVATE:
+            logDebug("### PRiVATE\n");
             break;
 
-        case kHashWtFnZb:
-            printf("### WtFNzB\n");
+        case kHash_WtFnZb:
+            logDebug("### WtFNzB\n");
             break;
 
         default:
-            printf("### unhandled: \'%.*s\' %s\n", (int)(end - start), start, describeHash(hash));
+            logDebug("### unhandled: \'%.*s\' %s\n", (int)(end - start), start, describeHash(hash));
             break;
         }
     }
 }
 
 
-bool processToken( tTokenType tokenType, const char *start, const char *end )
+bool processToken( tTokenType tokenType, const unsigned char *start, const unsigned char *end )
 {
     tHash hash;
-    const char * p;
-    const char * filename = NULL;
+    const unsigned char * p;
+    const unsigned char * filename = NULL;
     long index;
     long total;
 
@@ -337,13 +469,13 @@ bool processToken( tTokenType tokenType, const char *start, const char *end )
     end++;
 
     if ( (end - start) > 0 ) {
-        printf( "%s: \'%.*s\'\n", tokenTypeNames[tokenType], (int)(end - start), start );
+        logDebug( "%s: \'%.*s\'\n", tokenTypeNames[tokenType], (int)(end - start), start );
 
         switch ( tokenType )
         {
         case kToken_Unquoted:
             if ( strncmp( start, "yEnc", 4 ) == 0 ) {
-                printf( "### yEnc\n" );
+                logDebug( "### yEnc\n" );
                 // ignore the rest
                 return true;
             }
@@ -363,44 +495,88 @@ bool processToken( tTokenType tokenType, const char *start, const char *end )
     }
 #ifdef DEBUG_VERBOSE
     else {
-        printf( "%s: (empty)\n", tokenTypeNames[tokenType] );
+        logDebug( "%s: (empty)\n", tokenTypeNames[tokenType] );
     }
 #endif
     return false;
 }
 #endif
 
-tSignature updateSignature( tSignature signature, tHash hash )
-{
-    signature <<= 4;
-    switch ( hash ) {
-    case kHashEmpty:
-        signature |= kToken_Empty; break;
-    case kHashN3wZ:
-        signature |= kToken_N3wZ; break;
-    case kHashnewzNZB:
-        signature |= kToken_newzNZB; break;
-    case kHashWtFnZb:
-        if ( ((signature >> 4) & 0x0f) == kToken_PRiVATE ) {
-            signature = ((signature >> 4) & ~0x0f) | kToken_PRiV_WtF;
-        } else {
-            signature |= kToken_WtFnZb;
+/**
+ * find the last occurrence of needle in haystack.
+ *
+ * similar to strstr(), except it finds the last match, not the first
+ * @param haystack the string to search
+ * @param needle what substr to look for
+ * @return NULL if not found, otherwise a pointer to the last occurrence in haystack of needle.
+ */
+unsigned char * strrstr(unsigned char * haystack, const unsigned char * needle) {
+    unsigned char * result = NULL;
+    while ( *haystack != '\0' ) {
+        if ( *haystack == *needle ) {
+            int i = 1;
+            while ( needle[ i ] != '\0' && haystack[ i ] == needle[ i ] ) { i++; }
+            if ( needle[ i ] == '\0' ) { result = haystack; }
         }
+        haystack++;
+    }
+    return result;
+}
+
+tSignature identifyToken(tHash hash, const byte * str, size_t len) {
+    const byte * p;
+    unsigned int value;
+    unsigned int divisor;
+    tSignature result;
+
+    switch ( hash ) {
+    case kHash_Empty:
+        result = kToken_Empty;
+        break;
+    case kHash_N3wZ:
+        result = kToken_N3wZ;
+        break;
+    case kHash_newzNZB:
+        result = kToken_newzNZB;
+        break;
+    case kHash_WtFnZb:
+        result = kToken_WtFnZb;
         break;
 
-    case kHashPRiVATE:
-        signature |= kToken_PRiVATE; break;
-    case kHashFULL:
-        signature |= kToken_FULL; break;
-    case kHashyEnc:
-        signature |= kToken_yEnc; break;
+    case kHash_PRiVATE:
+        result = kToken_PRiVATE;
+        break;
+    case kHash_FULL:
+        result = kToken_FULL;
+        break;
+    case kHash_yEnc:
+        result = kToken_yEnc;
+        break;
+    case kHash_Of:
+        result = kToken_Of;
+        break;
 
     default:
-        signature |= kToken_String;
+        result = kToken_Number;
+        value = 0;
+        divisor = 0;
+        for ( int i = 0; i < len; i++ ) {
+            if ( isdigit(str[ i ])) {
+                value = value * 10 + (str[ i ] - '0');
+            } else if ( str[ i ] == '/' ) {
+                divisor = value;
+                value = 0;
+                result = kToken_Fraction;
+            } else {
+                // result = kToken_Quoted;
+                result = kToken_String;
+                break;
+            }
+        }
         break;
     }
-    printf( "\n%s", tokenTypeNames[signature & 0x0F]);
-    return signature;
+
+    return result;
 }
 
 /*
@@ -419,572 +595,329 @@ tSignature updateSignature( tSignature signature, tHash hash )
 
 */
 
-void processSubject( const unsigned char * subject )
-{
-    static struct {
-        unsigned char matchChar;
-        unsigned int  isSeparator : 1;
-        unsigned int  ifUnquoted  : 1;
-        unsigned int  isBeginRun  : 1;
-        unsigned int  isEndRun    : 1;
-    } charMap[256] = {
-            [0]   = {0,   1, 1, 0, 1},
-            ['"'] = {'"', 1, 1, 1, 1},
-            ['['] = {']', 1, 1, 1, 0},
-            [']'] = {0,   1, 1, 0, 1},
-            ['('] = {')', 1, 1, 1, 0},
-            [')'] = {0,   1, 1, 0, 1},
-            ['-'] = {0,   1, 0, 0, 0},
-            [' '] = {0,   1, 0, 0, 1}
-    };
+unsigned char * preprocessSubject(const unsigned char * subject) {
+    fprintf(stdout, "\ns: %s\n", subject);
+    unsigned char * subj = (byte *) strdup(subject);
 
-    unsigned char debug[5][1024];
-    const unsigned char * p;
-
-    tSignature signature = kTokenTypeMax;
-    tHash hash = 0xDeadBeef;
-
-    printf("\nS: %s\n", subject);
-
-    const unsigned char * start = NULL;
-    const unsigned char * end;
-
-    memset(debug, '\0', sizeof(debug));
-
-    unsigned char matchChar;
-    unsigned int level = 0;
-    bool newState = false;
-    bool prevState = true;
-
-    bool abort = false;
-    for ( p = subject; *p != '\0' && !abort; p++ )
-    {
-        unsigned int i = (unsigned int)(p - subject);
-        if ( i >= sizeof(debug[0]) ) i++;
-
-        debug[0][i] = *p;
-        debug[1][i] = charMap[*p].isSeparator ? '^' : '_';
-        debug[2][i] = matchChar;
-        debug[3][i] = ' ';
-        debug[4][i] = (unsigned char)level + '0';
-
-        newState = charMap[*p].isSeparator;
-        if (newState != prevState ) {
-            if ( newState ) {
-                end = p;
-            } else if (start == NULL) {
-                start = p;
-            }
-            prevState = newState;
-        }
-
-        if ( charMap[*p].isSeparator ) {
-            if (*p == matchChar) {
-                if (level > 0) {
-                    --level;
-                    if (level == 0) debug[1][i] = '}';
-                }
-                if (level == 0 && start != NULL) {
-                    signature = updateSignature(signature, hash);
-
-                    debug[3][start - subject] = 'S';
-                    debug[3][  end - subject] = 'E';
-
-                    printf(" \'%.*s\' (0x%lx) 0x%lx", (int) (end - start), start, hash, signature);
-
-                    if ((signature & 0x0f) == kToken_yEnc) {
-                        printf("\nparsing stopped");
-                        abort = true;
-                    }
-
-                    matchChar = ' ';
-                    start = NULL;
-                }
-            } else if (charMap[*p].isBeginRun) {
-                debug[2][i] = *p;
-                if (level == 0) {
-                    hash = 0xDeadBeef;
-                    matchChar = charMap[*p].matchChar;
-                }
-                if (matchChar == charMap[*p].matchChar) {
-                    ++level;
-                    if (level == 1) debug[1][i] = '{';
-                }
-            }
-        } else {
-            hash ^= (hash * 47) + *p;
-        }
-
+    /* Trim a yEnc suffix, if present.
+     * Trim only at the last one - I've seen cases where another 'yEnc'
+     * keyword is embedded in the _middle_ of the subject ?!?! */
+    unsigned char * e = strrstr(subj, " yEnc");
+    if ( e != NULL) {
+        /* back up over trailing separators */
+        while ( e > subject && charMap[ *e ].runEndType == kSeparator ) { --e; }
+        /* terminate the string */
+        e[ 1 ] = '\0';
     }
-
-    printf( "\nP: %s\nT: %s\nR: %s\nQ: %s\nL: %s\n", debug[0], debug[1], debug[2], debug[3], debug[4] );
-    printf( "sig: 0x%lx\n", signature );
-}
 
 #if 0
-{
-    const int kIsSeparator    = 0b00000001;
-    const int kIsTerminator   = 0b00000010;
-    const int kIsQuote        = 0b00000100;
-    const int kIsLeftBracket  = 0b00001000;
-    const int kIsRightBracket = 0b00010000;
+    unsigned char * s = subj;
+    unsigned char * d = s;
 
-    static unsigned char tokenSepMap[256] = {
-        [ 0 ] = kIsTerminator,
-        ['-'] = kIsSeparator,
-        [' '] = kIsSeparator,
-        [':'] = kIsSeparator | kIsTerminator,
-        ['"'] = kIsSeparator | kIsTerminator | kIsQuote,
+    unsigned char prevCh = '\0';
 
-        ['<'] = kIsSeparator | kIsLeftBracket,
-        ['('] = kIsSeparator | kIsLeftBracket,
-        ['['] = kIsSeparator | kIsLeftBracket,
-
-        ['>'] = kIsSeparator | kIsTerminator | kIsRightBracket,
-        [')'] = kIsSeparator | kIsTerminator | kIsRightBracket,
-        [']'] = kIsSeparator | kIsTerminator | kIsRightBracket
-    };
-
-    unsigned char debug[2][1024];
-
-    const unsigned char * p = subject;
-    const unsigned char * start;
-    const unsigned char * end;
-    int                   level = 0;
-    unsigned long         signature = kTokenTypeMax;
-
-    bool abort = false;
-    bool seenQuote;
-    bool isQuoted = false;
-    bool isEmpty;
-    bool isNumber;
     do {
-        start = p;
-        if ( tokenSepMap[*p] & kIsSeparator ) {
-            seenQuote = false;
-            isQuoted = false;
-            isEmpty = false;
-            do {
-                if ( tokenSepMap[*p] & kIsQuote ) {
-                    seenQuote = true;
-                    isQuoted  = true;
-                }
-                ++p;
-                if ( seenQuote && (tokenSepMap[*p] & kIsQuote)) {
-                    isEmpty = true;
-                }
-                seenQuote = false;
-            } while ( tokenSepMap[*p] & kIsSeparator );
-
-            if (isQuoted) {
-                signature <<= 4;
-                if (isEmpty) {
-                    signature |= kToken_Empty;
-                    printf( "empty:" );
-                }
-                else
-                {
-                    signature |= kToken_Quoted;
-                    printf( "quoted:" );
-                }
-            } else {
-                printf( "separator:" );
-            }
+        if ( (prevCh == '[' || prevCh == '"' || prevCh == '-') && *s == ' ' ) {
+            /* skip the space, copy the next unsigned char */
+            *d++ = *(++s);
+        } else if ( prevCh == ' ' && (*s == ']' || *s == '-' || *s == '"' || *s == ' ')) {
+            /* overwrite the space with the currecnt unsigned char */
+            d[-1] = *s;
         } else {
-            end = p;
-            signature <<= 4;
-            tHash hash = 0xDeadBeef;
-            isNumber = true;
-            level = 0;
-            int i = 0;
-            do {
-                hash ^= (hash * 47) + *p;
-                isNumber = isNumber && isdigit( *p );
-                if ( tokenSepMap[*p] & kIsLeftBracket )  level++;
-                if ( tokenSepMap[*p] & kIsRightBracket ) level--;
-
-                if ( tokenSepMap[*p] & kIsSeparator ) end = p;
-                debug[0][i] = *p;
-                debug[1][i] = (unsigned char)level + '0';
-
-                p++;
-                i = (i+1) % sizeof(debug[0]);
-            } while ( *p != '\0' && (level > 0 || !(tokenSepMap[*p] & kIsTerminator)) );
-            debug[0][i] = '\0';
-            debug[1][i] = '\0';
-
-            switch ( hash ) {
-            case kHashPRiVATE:
-                signature |= kToken_PRiVATE; break;
-            case kHashN3wZ:
-                signature |= kToken_N3wZ; break;
-            case kHashnewzNZB:
-                signature |= kToken_newzNZB; break;
-            case kHashWtFnZb:
-                signature |= kToken_WtFnZb; break;
-            case kHashFULL:
-                signature |= kToken_FULL; break;
-            case kHashyEnc:
-                signature |= kToken_yEnc; abort = true; break;
-
-            default:
-                if (isNumber)
-                    signature |= kToken_Number;
-                else
-                    signature |= kToken_String;
-                break;
-            }
-            printf( "%s\n%s\n", debug[0], debug[1] );
-            printf( "%s: (0x%lx)", tokenTypeNames[ signature & 0x0F ], hash );
+            /* not a special case, just copy it */
+            *d++ = *s;
         }
-        printf( " \'%.*s\'\n", (int)(p - start), start );
-        if (abort) printf("abort\n");
-    } while (*p != '\0' && !abort);
+        prevCh = *s;
 
-//    if (signature > 0x9000000000000000) {
-        printf( "sig: 0x%lx\t%s\n", signature, subject );
-//    }
+    } while ( *s++ != '\0' );
+
+    fprintf( stdout, "d: %s\n", subj );
+#endif
+    return subj;
 }
 
-void processSubject2( const char * subject )
+void processSubject(const unsigned char * subject)
 {
-    int   level     = 0;
-    tHash hash      = 0xDeadBeef;
-    bool  allDigits = true;
-    int   number    = 0;
+    const unsigned char * tokenStart;
+    const unsigned char * tokenEnd;
+    unsigned int tokenLen;
+             int tokenLevel = 0;
+    const unsigned char * separatorStart;
+    const unsigned char * filename = NULL;
 
-    struct {
-        unsigned int    count;
-        struct {
-            const char *  string;
-            int           length;
-        } list[10];
-    } parm;
+    tHash hash = kHash_Empty;
 
-    static struct {
-        unsigned long   signature;
-        int             filename;
-        int             index;
-        int             max;
-    } patterns[] = {
-        {0xc2,0, -1, -1},
-        {0xc62,0,-1,-1 },
-        {0xc262, 1, -1, -1 },
-        {0xc4162, 1, -1, -1 },
-        {0xc5562, 2, 0, 1 },
-        {0xc6552, 0, 1, 2 },
-        {0xc9262, 1, -1, -1 },
-        {0xc25562, 3, 1, 2 },
-        {0xc55162, 2, 0, 1 },
-        {0xc255162, 3, 1, 2 },
-        {0xc82a442, 0, 1, 2 },
-        {0xc82a552, 0, 1, 2 },
-        {0xc925562, 3, 1, 2 },
-        {0xc4144162, 3, 1, 2 },
-        {0xc4155162, 3, 1, 2 },
-        {0xc4255162, 4, 2, 3 },
-        {0xc5155162, 3, 1, 2 },
-        {0xc9255162, 3, 1, 2 },
-        {0xc41455162, 4, 2, 3 },
-        {0xc9282a552, 1, 2, 3 },
-        {0xc414144162, 4, 2, 3 },
-        {0xc424255162, 6, 4, 5 },
-        {0xc514155162, 4, 2, 3 },
-        {0xc817141552, 0, 1, 2},
-        {0xc924155162, 4, 2, 3 },
-        {0xc2524155162, 6, 4, 5 },
-        {0xc4141455162, 5, 3, 4 },
-        {0xc41414155162, 5, 3, 4 },
-        {0xc81714155132, 0 ,1, 2 },
-        {0xc81715154132, 2, 1, 0 },
-        {0xc92514155162, 5, 3, 4 },
-        {0xc92817141552, 1, 2, 3 },
-        {0xc414141455162, 6, 4, 5 },
-        {0xc51a1414155162, 5, 3, 4 },
-        {0xc9281714155132, 1, 2, 3 },
-        {0xc9281715154132, 3, 2, 1 },
-        // also have path or container name
-        {0xc6162, 1, -1, -1 },
-        {0xc425562, 4, 2, 3 },
-        {0xc525562, 4, 2, 3 },
-        {0xc2455162, 4, 2, 3 },
-        {0xc4155162, 3, 1, 2 },
-        {0xc42455162, 5, 3, 4 },
-        {0xc414155162, 4, 2, 3 },
-        {0xc924255162, 5, 3, 4 },
-        {0xc5141455162, 5, 3, 4 },
-        {0xc51b1414155162, 5, 3, 4 },
-        {0xc8171544155132, 3, 4, 5 },
-        {0xc81715444155132, 3, 4, 5 },
-        {0xc9251a1414155162, 6, 4, 5 },
-        {0xc9251b1414155162, 6, 4, 5 },
-        {0xc928171544155132, 3, 4, 5 },
-        // encoded?
-        {0xc92, 0, -1, -1 },
-        {0xc827552, 0, 1, 2 },
-        {0xc824552, 0, 2, 3},
-        {0xc92827552, 1, 2, 3 },
-        // table end
-        {0,-1,-1,-1}
-    };
-
-    parm.count = 0;
-    printf("\nsubject: \'%s\'\n", subject);
-
-    unsigned long signature = kTokenTypeMax;
-
-    const char * p     = subject;
-    const char * start = p;
-
-    do {
-        // handle the unquoted run when we detect the beginning of a quoted run or end-of-string
-        if ((level == 0) && (p > start) && (*p == '\"' || *p == '[' || *p == '\0')) {
-            while (*start != '\0' && isblank(*start)) { start++; }
-            const char *end = p;
-            while (end > start && isblank(end[-1])) { end--; }
-
-            switch ( end - start ) {
-            case 0:
-                break;
-
-            case 1:
-                if ( *start == '-' ) {
-                    signature = (signature <<= 4) | kToken_Separator;
-                    // printf( "separator\n" );
-                } else {
-            default:
-                    signature = (signature <<= 4) | kToken_Unquoted;
-                    if (strncmp(start, "yEnc", 4) == 0) {
-                        // don't bother processing the rest of the string
-                        while ( *p != '\0' ) {
-                            ++p;
-                        }
-                    } else {
-                        parm.list[parm.count].string = start;
-                        parm.list[parm.count].length = (end - start);
-                        ++parm.count;
-                        // printf("unquoted: \'%.*s\'\n", (int) (end - start), start );
-                    }
-                }
-                break;
-            }
-        }
-
-        switch ( *p )
-        {
-        case '\0':
-            break;
-
-        case '\"':
-            p++;
-            start = p;
-            // scan through double-quoted run
-            while ( *p != '"' && *p != '\0' ) {
-                p++;
-            }
-
-            signature <<= 4;
-            if ( p == start ) {
-                signature |= kToken_Empty;
-                // printf( "empty quotes\n" );
-            } else {
-                signature |= kToken_Quoted;
-                parm.list[parm.count].string = start;
-                parm.list[parm.count].length = (p - start);
-                ++parm.count;
-                // printf( "quoted: \"%.*s\"\n", (int) (p - start), start );
-            }
-            start = p + 1;
-            break;
-
-        case '[':
-            level++;
-            hash = 0xDeadBeef;
-            // consume any leading whitespace
-            do { ++p; } while ( *p != '\0' && isblank(*p));
-            start     = p;
-            allDigits = true;
-            number    = 0;
-
-            while ( *p != '\0' && level > 0 )
-            {
-                switch ( *p )
-                {
-                case '[':
-                    // handle nested square brackets
-                    level++;
-                    break;
-
-                case '/':
-                    // handle embedded slashes in bracketed runs
-
-                    signature <<= 4;
-                    number = parseNumber( start, (p - start) );
-                    if ( number < 0 ) {
-                        signature |= kToken_String;
-
-                        parm.list[parm.count].string = start;
-                        parm.list[parm.count].length = (p - start);
-
-                        // printf( "string: \'%.*s\'\n", (int) (end - start), start );
-                    } else {
-                        signature |= kToken_Number;
-
-                        parm.list[parm.count].string = NULL;
-                        parm.list[parm.count].length = number;
-
-                        // printf( "number: %d\n", number );
-                    }
-                    ++parm.count;
-
-                    // reset for the next run
-                    hash      = 0xDeadBeef;
-                    allDigits = true;
-                    number    = 0;
-                    for ( start = p + 1; *start != '\0' && isblank(*start); start++ ) { /* spin */ }
-                    break;
-
-                case ']':
-                    // handle nested square brackets
-                    --level;
-                    if ( level <= 0 ) {
-                        // end of square-bracketed run
-                        level = 0;
-
-                        signature <<= 4;
-                        switch ( hash )
-                        {
-                        case kHashPRiVATE:  signature |= kToken_PRiVATE; break;
-                        case kHashN3wZ:     signature |= kToken_N3wZ;    break;
-                        case kHashnewzNZB:  signature |= kToken_newzNZB; break;
-                        case kHashWtFnZb:   signature |= kToken_WtFnZb;  break;
-                        case kHashFULL:     signature |= kToken_FULL;    break;
-
-                        default:
-                            while (*start != '\0' && isblank(*start)) { start++; }
-                            const char *end = p;
-                            while (end > start && isblank(end[-1])) { end--; }
-
-                            number = parseNumber( start, (end - start) );
-                            if ( number < 0 ) {
-                                signature |= kToken_String;
-
-                                parm.list[parm.count].string = start;
-                                parm.list[parm.count].length = (end - start);
-
-                                // printf( "string: \'%.*s\'\n", (int) (end - start), start );
-                            } else {
-                                signature |= kToken_Number;
-
-                                parm.list[parm.count].string = NULL;
-                                parm.list[parm.count].length = number;
-
-                                // printf( "number: %d\n", number );
-                            }
-                            ++parm.count;
-
-                            break;
-                        }
-
-                        // reset for next run
-                        hash      = 0xDeadBeef;
-                        allDigits = true;
-                        number    = 0;
-                        start     = p + 1;
-                        for ( start = p + 1; *start != '\0' && isblank(*start); start++ ) { /* spin */ }
-                    }
-                    break;
-
-                default:
-                    // normal character, run per-char calcs
-                    hash ^= (hash * 47) + *p;
-                    break;
-                } // switch
-                p++;
-            } // while
-            break;
-        } // switch
-    } while (*p++ != '\0');
-
-    unsigned int i = 0;
-    while ( patterns[i].signature != 0 ) {
-        if ( patterns[i].signature == signature ) {
-            printf( "matched: 0x%lx, \'%.*s\', ",
-                    patterns[i].signature,
-                    parm.list[patterns[i].filename].length,
-                    parm.list[patterns[i].filename].string );
-            if ( patterns[i].index < 0 ) {
-                printf( "-, " );
-            } else {
-                printf( "%d, ", parm.list[patterns[i].index].length );
-            }
-            if ( patterns[i].max < 0 ) {
-                printf( "-\n" );
-            } else {
-                printf( "%d\n", parm.list[patterns[i].max].length );
-            }
-            break;
-        }
-        i++;
-    }
-    if ( patterns[i].signature == 0 ) {
-        printf( "sig: 0x%lx\n", signature );
-        for ( int i = 0; i < parm.count; ++i ) {
-            if ( parm.list[i].string == NULL ) {
-                printf("[%d] %d\n", i, parm.list[i].length);
-            } else {
-                printf("[%d] %.*s (0x%016lx)\n",
-                       i,
-                       parm.list[i].length,
-                       parm.list[i].string,
-                       hashString( parm.list[i].string, parm.list[i].length) );
-            }
-        }
-    }
-}
+#ifdef DEBUG
+    char debug[4][1024];
+    memset(debug, '?', sizeof(debug));
 #endif
 
-void processElement( tElement * element )
-{
+
+    unsigned char * subj = preprocessSubject(subject);
+
+    const unsigned char * p = subj;
+    tokenStart = p;
+    separatorStart = p;
+
+    enum eRunEndType wasEndRun = kNotEnd;
+
+    do {
+        enum eRunEndType endRun  = charMap[ *p ].runEndType;
+
+#ifdef DEBUG
+        unsigned int i = (unsigned int) (p - subj);
+        if ( i >= sizeof(debug[ 0 ])) i = sizeof(debug[ 0 ]) - 1;
+
+        debug[ 0 ][ i ] = *p;
+        debug[ 1 ][ i ] = '0' + (endRun);
+        debug[ 2 ][ i ] = (endRun != kNotEnd) ? '^' : '_';
+        debug[ 3 ][ i ] = (char) ('0' + tokenLevel);
+#endif
+
+//        if (tokenLevel == 0) {
+            if ( endRun != kNotEnd && wasEndRun == kNotEnd && (p - tokenStart) > 1 ) {
+                logDebug("%s: \'%.*s\' hash: 0x%016lx\n", runEndTypeAsString[endRun], (int) (tokenEnd - tokenStart), tokenStart, hash);
+                tokenStart = p;
+                hash = kHash_Empty;
+            }
+
+            if ( (endRun != kSeparator) && (wasEndRun == kSeparator) && (p - separatorStart) > 1 ) {
+                /* end of separator run */
+                /* emit previous token run */
+                logDebug("sep: \'%.*s\' hash: 0x%016lx\n", (int) (p - separatorStart), separatorStart, hash);
+                /* reset start of token run */
+                hash = kHash_Empty;
+            }
+//        }
+
+        switch ( endRun ) {
+
+        case kDoubleQuotes:
+            if ( tokenLevel == 0) {
+                /* start of quoted string */
+                tokenStart = p + 1;
+                hash = kHash_Empty;
+                ++tokenLevel;
+            } else {
+                /* end of quoted string */
+                if ( tokenStart == p ) {
+                    logDebug("empty quotes\n");
+                } else {
+                    logDebug("quoted: \"%.*s\"\n", (int) (tokenEnd - tokenStart), tokenStart);
+                }
+                --tokenLevel;
+            }
+            break;
+
+        case kLeftSquareBracket:
+            if ( p[ 1 ] == '[' ) {
+                /* ignore '[[' */
+                p++;
+            } else {
+                if ( tokenLevel == 0 ) {
+                    tokenStart = p + 1;
+                    /* skip over any leading separators */
+                    while ( charMap[ *tokenStart ].runEndType == kSeparator ) { ++tokenStart; }
+                    hash = kHash_Empty;
+                }
+                ++tokenLevel;
+            }
+            break;
+
+        case kRightSquareBracket:
+            if ( p[ 1 ] == ']' ) {
+                p++;
+            } else {
+                --tokenLevel;
+                if ( tokenLevel < 1 ) {
+                    tokenLen = tokenEnd - tokenStart;
+                    logDebug("token: \'%.*s\'", tokenLen, tokenStart);
+                    if ( tokenLen < 12 ) {
+                        logDebug(" hash: 0x%016lx", hash);
+                    }
+                    logDebug("\n");
+                }
+            }
+            break;
+
+        // case kNotEnd:
+        case kSeparator:
+            if ( tokenLevel == 0 ) {
+                if ( wasEndRun != kSeparator ) {
+                    /* start of separator run */
+                    separatorStart = p;
+                    hash = kHash_Empty;
+                }
+                tokenStart = p + 1;
+            } else
+        default:
+            {
+                hash ^= (hash * 47) + *p;
+                tokenEnd = p + 1;
+            }
+            break;
+        }
+
+#if 0
+        if ( atSeparator ) {
+            if ( prevState == false ) {
+                // at the token/separator boundary
+                separatorStart = p;
+
+                prevHash = hash;
+                hash = kHash_Empty;
+
+            }
+        } else {
+            if ( prevState == true ) {
+                // at the separator/token boundary
+
+                for ( int k = 0; separatorHashTable[ k ].hash != 0; k++ ) {
+                    if ( separatorHashTable[ k ].hash == hash ) {
+
+#ifdef DEBUG
+                        if ( tokenStart == separatorStart ) {
+                            debug[ 2 ][ tokenStart - subj ] = '^';
+                        } else {
+                            debug[ 2 ][ tokenStart - subj ] = '<';
+                            debug[ 2 ][ separatorStart - subj ] = '>';
+#endif
+                            prev2Token = prevToken;
+                            prevToken = token;
+                            token = identifyToken( prevHash, tokenStart, separatorStart - tokenStart );
+
+                            switch ( token ) {
+                            case kToken_Quoted:
+                                if ( filename == NULL) {
+                                    filename = blockToStr(tokenStart, separatorStart);
+                                }
+                                break;
+
+                            case kToken_String:
+                                if ( filename == NULL && prev2Token == kToken_PRiVATE && prevToken == kToken_WtFnZb ) {
+                                    filename = blockToStr(tokenStart, separatorStart);
+                                }
+                                break;
+
+                            case kToken_Number:
+                                if ( prev2Token == kToken_Number && prevToken == kToken_Of ) {
+                                    logDebug( "(fraction)");
+                                }
+                                break;
+                            }
+#ifdef DEBUG
+                            logDebug( "%10s \'%.*s\' (0x%lx)\n",
+                                      tokenTypeNames[token],
+                                      (int)(separatorStart - tokenStart), tokenStart,
+                                      prevHash );
+                        }
+                        debug[ 4 ][ i ] = (char) ('0' + (tokenStart - separatorStart));
+
+                        logDebug("       sep \'%.*s\' (0x%lx)",
+                                 (int) (p - separatorStart), separatorStart, hash);
+                        int levelChanges = 0;
+#endif
+
+                        for ( int j = 0; j < 2; j++ ) {
+                            logDebug(" %s", sepTokenToString[ separatorHashTable[ k ].index[ j ]]);
+
+                            switch ( separatorHashTable[ k ].index[ j ] ) {
+
+                            case kSep_startSq:              // '[', '[ ', ' [', ' [ '
+                            case kSep_startQuotes:          // ' "',
+                            case kSep_startBracket:         // '(', ' (', '  ('
+                                tokenLevel++;
+#ifdef DEBUG
+                                levelChanges++;
+#endif
+                                break;
+
+                            case kSep_endSq:                // ']', '] ', ']  '
+                            case kSep_endQuotes:            // '" ', '"  '
+                            case kSep_endBracket:           // ')', ') '
+                                tokenLevel--;
+#ifdef DEBUG
+                                levelChanges++;
+#endif
+                                break;
+
+                            case kSep_dash:
+                            case kSep_emptyQuotes:          // '""'
+                            case kSep_space:                // ' ', '  '
+                            case kSep_nop:
+                            default:
+                                break;
+                            }
+                        }
+#ifdef DEBUG
+                        if ( levelChanges > 1 ) {
+                            debug[ 3 ][ i ] = 'x';
+                        }
+                        logDebug(" [%d,%d]\n", tokenLevel, levelChanges);
+#endif
+                        tokenStart = p;
+                        break;
+                    }
+                }
+                prevHash = hash;
+                hash = kHash_Empty;
+            }
+        }
+
+        hash ^= ( hash * 47 ) + *p;
+#endif
+        wasEndRun = endRun;
+    } while ( *p++ != '\0' );
+
+#ifdef DEBUG
+    unsigned int i = (unsigned int) (p - subj - 1);
+    for ( int j = 0; j < 4; j++ ) {
+        debug[ j ][ i ] = '\0';
+        logDebug("%d: %s\n", j, debug[ j ]);
+    }
+#endif
+
+    free(subj);
+    free((void *) filename);
+}
+
+void processElement(tElement * element) {
 #ifdef DEBUG_VERBOSE
-    if ( element != NULL && element->elementHash != kHashSegment ) {
-        printf( "   >  %s: \'%s\'\n", describeHash(element->elementHash), element->contents );
+    if ( element != NULL && element->elementHash != kHash_Segment ) {
+        logDebug( "   >  %s: \'%s\'\n", describeHash(element->elementHash), element->contents );
 
         for ( tAttribute * attribute = element->attributes;
               attribute != NULL;
               attribute = attribute->next )
         {
-            printf( "     >  %s: \'%s\'\n", describeHash(attribute->attributeHash ), attribute->value );
+            logDebug( "     >  %s: \'%s\'\n", describeHash(attribute->attributeHash ), attribute->value );
         }
     }
 #endif
 }
 
-int processFile( FILE * file )
-{
-    yxml_t      xml;
-    yxml_ret_t  r = YXML_OK;
-    char        buffer[4096];
-    char        value[1024];
+int processFile(FILE * file) {
+    yxml_t xml;
+    yxml_ret_t r = YXML_OK;
+    char buffer[4096];
+    char value[1024];
 
     int level = 0;
-    yxml_init( &xml, buffer, sizeof( buffer ) );
+    yxml_init(&xml, buffer, sizeof(buffer));
 
-    tElement *    element   = NULL;
-    tAttribute *  attribute = NULL;
-    tElement *    newElement;
+    tElement * element = NULL;
+    tAttribute * attribute = NULL;
+    tElement * newElement;
     int ch;
-    while( (ch = fgetc( file )) != EOF  )
-    {
-        r = yxml_parse( &xml, ch );
-        switch ( r )
-        {
+    while ((ch = fgetc(file)) != EOF) {
+        r = yxml_parse(&xml, ch);
+        switch ( r ) {
         case YXML_ELEMSTART:
 #ifdef DEBUG_VERBOSE
-            printf( "%d  ElemStart %s = 0x%016lx\n", level, xml.elem, hashString( xml.elem ) );
+            logDebug( "%d  ElemStart %s = 0x%016lx\n", level, xml.elem, hashString( xml.elem ) );
 #endif
-            if ((newElement = calloc( 1, sizeof( tElement ))) != NULL) {
-                newElement->elementHash = hashString( xml.elem, 0 );
+            if ((newElement = calloc(1, sizeof(tElement))) != NULL) {
+                newElement->elementHash = hashString(xml.elem, 0);
 
                 /* push new entry on the element stack */
                 newElement->next = element;
@@ -996,28 +929,28 @@ int processFile( FILE * file )
 
         case YXML_ATTRSTART:
 #ifdef DEBUG_VERBOSE
-            printf( "   AttrStart %s = 0x%016lx\n", xml.attr, hashString( xml.attr ) );
+            logDebug( "   AttrStart %s = 0x%016lx\n", xml.attr, hashString( xml.attr ) );
 #endif
-            if ( (attribute = calloc( 1, sizeof( tAttribute ))) != NULL ) {
-                attribute->attributeHash = hashString( xml.attr, 0 );
+            if ((attribute = calloc(1, sizeof(tAttribute))) != NULL) {
+                attribute->attributeHash = hashString(xml.attr, 0);
             }
-            attribute->next     = element->attributes;
+            attribute->next = element->attributes;
             element->attributes = attribute;
             value[ 0 ] = '\0';
             break;
 
         case YXML_ATTRVAL:
         case YXML_CONTENT:
-            strncat( value, xml.data, sizeof(value) - 2 );
+            strncat(value, xml.data, sizeof(value) - 2);
             break;
 
         case YXML_ATTREND:
 #ifdef DEBUG_VERBOSE
-            printf( "   AttrEnd %s \'%s\'\n", xml.attr, value );
+            logDebug( "   AttrEnd %s \'%s\'\n", xml.attr, value );
 #endif
-            attribute->value = strdup( value );
-            if ( element->elementHash == kHashFile && attribute->attributeHash == kHashSubject ) {
-                processSubject( attribute->value );
+            attribute->value = strdup(value);
+            if ( element->elementHash == kHash_File && attribute->attributeHash == kHash_Subject ) {
+                processSubject(attribute->value);
             }
 
             value[ 0 ] = '\0';
@@ -1026,70 +959,69 @@ int processFile( FILE * file )
         case YXML_ELEMEND:
             --level;
 #ifdef DEBUG_VERBOSE
-            printf( "%d  ElemEnd %s \'%s\'\n", level, xml.elem, value );
+            logDebug( "%d  ElemEnd %s \'%s\'\n", level, xml.elem, value );
 #endif
-            if ( element != NULL ) {
+            if ( element != NULL) {
                 void * temp;
 
                 trimstr(value);
-                if ( strlen( value ) > 0 ) {
-                    element->contents = strdup( value );
+                if ( strlen(value) > 0 ) {
+                    element->contents = strdup(value);
                     value[ 0 ] = '\0';
                 }
 
-                processElement( element );
+                processElement(element);
 
                 // release attributes assigned to the element at the top of the element stack
                 attribute = element->attributes;
-                while ( attribute != NULL ) {
-                    temp      = attribute;
+                while ( attribute != NULL) {
+                    temp = attribute;
                     attribute = attribute->next;
-                    free( temp );
+                    free(temp);
                 }
                 // 'pop' the top of the element stack, and release its memory
-                temp    = element;
+                temp = element;
                 element = element->next;
-                free( temp );
+                free(temp);
             }
             break;
 
         default:
             if ( r < 0 ) {
-                fprintf( stderr, "xml parser error %d\n", r );
-                exit( r );
+                fprintf(stderr, "xml parser error %d\n", r);
+                exit(r);
             }
             break;
         }
     }
 
-    r = yxml_eof( &xml );
+    r = yxml_eof(&xml);
     if ( r != YXML_OK ) {
-        fprintf( stderr, "xml error %d at end of file", r );
+        fprintf(stderr, "xml error %d at end of file", r);
     }
 
     return r;
 }
 
-int main( int argc, const char *argv[] )
-{
-    const char * myName = strrchr(argv[0], '/');
-    if ( myName++ == NULL ) {
-        myName = argv[0];
+int main(int argc, const char * argv[]) {
+    const char * myName = strrchr(argv[ 0 ], '/');
+    if ( myName++ == NULL) {
+        myName = argv[ 0 ];
     }
 
     if ( argc < 2 ) {
         processFile(stdin);
     } else {
-        for ( int i = 1; i < argc; ++i )  {
-            FILE * file = fopen( argv[i], "r" );
-            if ( file == NULL ) {
-                fprintf( stderr,
-                         "### %s: error: unable to open \'%s\' (%d: %s)\n",
-                         myName, argv[i], errno, strerror(errno) );
+        for ( int i = 1; i < argc; ++i ) {
+            FILE * file = fopen(argv[ i ], "r");
+            if ( file == NULL) {
+                fprintf(stderr,
+                        "### %s: error: unable to open \'%s\' (%d: %s)\n",
+                        myName, argv[ i ], errno, strerror(errno));
                 exit(-errno);
             } else {
-                processFile( file );
-                fclose( file );
+                processFile(file);
+                fclose(file);
             }
         }
     }
